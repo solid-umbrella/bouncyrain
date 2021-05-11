@@ -2,18 +2,33 @@
   (:gen-class)
   (:require
    [aleph.http :as http]
+   [clojure.string :as string]
    [compojure.core :as compojure :refer [ANY GET]]
-   [ring.middleware.params :as params]
+   [ring.util.request :as request]
    [manifold.deferred :as d]
    [manifold.stream :as s]
-   [manifold.bus :as bus]))
+   [manifold.bus :as bus]
+   [clojure.data.json :as json]))
 
 (def hooks (bus/event-bus))
+
+(defn convert-to-json
+  [req]
+  (json/write-str {:ip (req :remote-addr)
+                   :headers (req :headers)
+                   :path (req :uri)
+                   :query (req :query-string)
+                   :host (req :server-name)
+                   :port (req :server-port)
+                   :scheme (req :scheme)
+                   :method (string/upper-case (name (req :request-method)))
+                   :body (request/body-string req)}
+                  :escape-slash false))
 
 (defn hook-handler
   [id]
   (fn [req]
-    (bus/publish! hooks id (str req))
+    (bus/publish! hooks id (convert-to-json req))
     {:status 200
      :headers {"content-type" "text/plain"}
      :body "OK"}))
@@ -27,18 +42,17 @@
                 (if-not conn
                   {
                    :status 400
-                   :headers {"content-type" "text/plain"}
-                   :body "Expected a websocket request"
+                   :headers {"content-type" "application/json"}
+                   :body req
                   }
                   (s/connect
                    (bus/subscribe hooks id)
                    conn)))))
 
 (def handle
-  (params/wrap-params
-   (compojure/routes
-    (ANY "/h/:id" [id] (hook-handler id))
-    (GET "/l/:id" [id] (listen-handler id)))))
+  (compojure/routes
+   (ANY "/h/:id" [id] (hook-handler id))
+   (GET "/v1/listen/:id" [id] (listen-handler id))))
 
 (defn -main
   "Starts the server."
